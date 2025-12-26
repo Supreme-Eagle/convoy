@@ -1,64 +1,58 @@
-import { Stack, useRouter, useSegments } from "expo-router";
-import { AuthProvider, useAuth } from "../src/auth/AuthProvider";
-import { PaperProvider } from "react-native-paper";
-import { View, ActivityIndicator } from "react-native";
-import { useEffect, useState } from "react";
-import { checkOnboardingStatus } from "../src/data/userProfile";
-import { ThemeProvider, useThemeContext } from "../src/context/ThemeContext";
+import React, { useEffect } from 'react';
+import { Stack, useRouter, useSegments } from 'expo-router';
+import { PaperProvider } from 'react-native-paper';
+import { AuthProvider, useAuth } from '../src/auth/AuthProvider';
+import { ThemeProvider } from '../src/context/ThemeContext';
+import { View, ActivityIndicator } from 'react-native';
 
-function RootLayoutNav() {
+// Separate component to handle Auth Navigation Logic
+function RootNavigation() {
   const { user, loading } = useAuth();
-  const router = useRouter();
   const segments = useSegments();
-  const { theme } = useThemeContext();
-  const [checkingOnboard, setCheckingOnboard] = useState(false);
+  const router = useRouter();
 
   useEffect(() => {
-    if (loading || checkingOnboard) return;
+    if (loading) return;
 
-    const inAuthGroup = segments[0] === "auth";
-    const inTabsGroup = segments[0] === "(tabs)";
-
-    const verifyRoute = async () => {
-      if (!user) {
-        if (!inAuthGroup) router.replace("/auth");
-      } else {
-        if (inAuthGroup) {
-          setCheckingOnboard(true);
-          const needsOnboard = await checkOnboardingStatus(user.uid);
-          setCheckingOnboard(false);
-          router.replace(needsOnboard ? "/onboarding" : "/(tabs)/home");
-        }
-      }
-    };
-    verifyRoute();
+    const inAuthGroup = segments[0] === 'auth';
+    const inOnboarding = segments[0] === 'onboarding';
+    
+    // If not logged in & not in auth/onboarding -> Go to Auth
+    if (!user && !inAuthGroup) {
+      router.replace('/auth');
+    } 
+    // If logged in & in auth -> Go to Home
+    else if (user && inAuthGroup) {
+      router.replace('/(tabs)/home');
+    }
   }, [user, loading, segments]);
 
-  if (loading || checkingOnboard) {
+  if (loading) {
     return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.background }}>
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' }}>
         <ActivityIndicator size="large" color="#F97316" />
       </View>
     );
   }
 
   return (
-    <PaperProvider theme={theme}>
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.colors.background } }}>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="auth" options={{ headerShown: false }} />
-        <Stack.Screen name="onboarding" options={{ headerShown: false }} />
-      </Stack>
-    </PaperProvider>
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="auth" />
+      <Stack.Screen name="onboarding" />
+      <Stack.Screen name="(tabs)" />
+      {/* Remove explicit (rides) screen if it causes warning, Expo finds it automatically */}
+    </Stack>
   );
 }
 
 export default function RootLayout() {
   return (
-    <ThemeProvider>
-      <AuthProvider>
-        <RootLayoutNav />
-      </AuthProvider>
-    </ThemeProvider>
+    <AuthProvider>
+      <ThemeProvider>
+        <PaperProvider>
+          <RootNavigation />
+        </PaperProvider>
+      </ThemeProvider>
+    </AuthProvider>
   );
 }

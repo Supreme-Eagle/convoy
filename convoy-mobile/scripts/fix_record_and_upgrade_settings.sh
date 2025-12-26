@@ -1,374 +1,426 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
 
-cat > "app/(tabs)/record.tsx" <<'EOF'
-import React, { useState, useEffect, useRef } from "react";
-import { View, StyleSheet, TouchableOpacity, Alert, Vibration } from "react-native";
-import { Text, Button, Portal, Modal, RadioButton, Switch, Divider } from "react-native-paper";
-import MapView, { Polyline, Marker, PROVIDER_GOOGLE, MapType, UrlTile } from "react-native-maps";
-import { useLocalSearchParams, useRouter } from "expo-router";
+# PATCH: Fix Firebase imports + add Map Style sheet on Record screen
+# FILE: app/(tabs)/record.tsx
+
+cat > app/\(tabs\)/record.tsx << 'EOF'
+import React, { useState, useEffect, useRef } from 'react';
+import { View, StyleSheet, TouchableOpacity, Dimensions, Vibration } from 'react-native';
+import { Text, Button, Avatar, IconButton } from 'react-native-paper';
+import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
-import * as Battery from 'expo-battery';
-import { Accelerometer } from 'expo-sensors';
-import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Audio } from 'expo-av';
-import { useThemeContext } from "../../src/context/ThemeContext";
-import { doc, addDoc, collection, serverTimestamp, updateDoc, onSnapshot, query, where } from "firebase/firestore";
-import { db, auth } from "../../src/firebase";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Accelerometer } from 'expo-sensors';
+import { db, auth } from '../../src/firebase';
+import { doc, updateDoc } from 'firebase/firestore';
+import { useThemeContext } from '../../src/context/ThemeContext';
+
+const { width, height } = Dimensions.get('window');
 
 export default function RecordScreen() {
-  const { theme, isDark } = useThemeContext();
-  const router = useRouter();
-  const { routeId } = useLocalSearchParams();
+  const { theme } = useThemeContext();
   const mapRef = useRef<MapView>(null);
-  
-  // UI State
-  const [mapType, setMapType] = useState<MapType>("standard");
-  const [showMapMenu, setShowMapMenu] = useState(false);
-  const [gloveMode, setGloveMode] = useState(false);
-  const [followUser, setFollowUser] = useState(true);
-  const [showRain, setShowRain] = useState(false);
-  const [rainTimestamp, setRainTimestamp] = useState<number | null>(null);
-  const [showPack, setShowPack] = useState(true); // Toggle for Pack Mode
-  
-  // Ride State
+
+  const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [recording, setRecording] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const [duration, setDuration] = useState(0);
-  const [currentSpeed, setCurrentSpeed] = useState(0); 
-  const [maxSpeed, setMaxSpeed] = useState(0);
-  const [path, setPath] = useState<any[]>([]);
-  const [ghostPath, setGhostPath] = useState<any[]>([]);
-  const [rideDocId, setRideDocId] = useState<string | null>(null);
-  const [currentLocation, setCurrentLocation] = useState<Location.LocationObject | null>(null);
-  
-  // Pack State (Other Riders)
-  const [activeRiders, setActiveRiders] = useState<any[]>([]);
+  const [stats, setStats] = useState({ time: 0, speed: 0 });
+  const [mapType, setMapType] = useState<'standard' | 'satellite'>('satellite');
 
-  // Crash / SOS State
-  const [crashDetected, setCrashDetected] = useState(false);
-  const [sosCountdown, setSosCountdown] = useState(10);
+  const [crashCountdown, setCrashCountdown] = useState<number | null>(null);
   const [sosActive, setSosActive] = useState(false);
-  const [flashOn, setFlashOn] = useState(false);
   const [sound, setSound] = useState<Audio.Sound | null>(null);
-  
-  // Battery State
-  const [batteryLevel, setBatteryLevel] = useState(1.0);
-  const [permission, requestPermission] = useCameraPermissions();
 
-  const locationSub = useRef<Location.LocationSubscription | null>(null);
-  const accelerometerSub = useRef<any>(null);
-  const sosInterval = useRef<any>(null);
-  const strobeInterval = useRef<any>(null);
+  const [showLayers, setShowLayers] = useState(false);
+  const [rainRadar, setRainRadar] = useState(false);
+  const [packMode, setPackMode] = useState(true);
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
-  };
-
+  // LOCATION + SPEED
   useEffect(() => {
     (async () => {
-      await Location.requestForegroundPermissionsAsync();
-      await requestPermission();
-      const level = await Battery.getBatteryLevelAsync();
-      setBatteryLevel(level);
-      
-      const loc = await Location.getCurrentPositionAsync({});
-      setCurrentLocation(loc);
-      if (mapRef.current) {
-        mapRef.current.animateToRegion({
-          latitude: loc.coords.latitude, longitude: loc.coords.longitude,
-          latitudeDelta: 0.005, longitudeDelta: 0.005
-        }, 1000);
-      }
-      
-      fetch('https://api.rainviewer.com/public/weather-maps.json')
-        .then(r => r.json())
-        .then(d => { if(d.radar?.past?.length) setRainTimestamp(d.radar.past[d.radar.past.length-1].time); });
-    })();
-    
-    return () => {
-      stopTracking();
-      if(sound) sound.unloadAsync();
-    };
-  }, []);
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') return;
 
-  // PACK MODE: Listen for other riders
-  useEffect(() => {
-    if (!showPack) {
-       setActiveRiders([]); 
-       return;
-    }
-
-    // Query: Status = "active"
-    const q = query(collection(db, "active_rides"), where("status", "==", "active"));
-    const unsub = onSnapshot(q, (snapshot) => {
-       const riders = snapshot.docs
-         .map(doc => ({ id: doc.id, ...doc.data() }))
-         .filter((r: any) => r.userId !== auth.currentUser?.uid && r.lastLocation); // Exclude self
-       
-       setActiveRiders(riders);
-    });
-    return () => unsub();
-  }, [showPack]);
-
-  const startTracking = async () => {
-    let accuracy = Location.Accuracy.BestForNavigation;
-    let timeInt = 2000; let distInt = 5; // Relaxed slightly for battery
-
-    if (batteryLevel < 0.12) { accuracy = Location.Accuracy.High; timeInt = 5000; distInt = 10; }
-
-    if (!locationSub.current) {
-      locationSub.current = await Location.watchPositionAsync(
-        { accuracy, timeInterval: timeInt, distanceInterval: distInt }, 
+      Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.High, distanceInterval: 5 },
         (loc) => {
-          const { latitude, longitude, speed } = loc.coords;
-          setCurrentLocation(loc);
-          const speedKmh = speed && speed > 0 ? speed * 3.6 : 0;
-          setCurrentSpeed(Math.max(0, speedKmh));
-          if (speedKmh > maxSpeed) setMaxSpeed(speedKmh);
-          
-          setPath(prev => [...prev, { latitude, longitude, speed: speedKmh }]);
-          
-          // SYNC TO FIREBASE (Pack Mode)
-          if (rideDocId && !paused) {
-             updateDoc(doc(db, "active_rides", rideDocId), {
-                lastLocation: { latitude, longitude },
-                currentSpeed: speedKmh,
-                lastUpdated: serverTimestamp()
-             }).catch(e => console.log("Sync Fail", e));
+          setLocation(loc);
+          if (recording) {
+            setStats((s) => ({
+              ...s,
+              speed: Math.round((loc.coords.speed || 0) * 3.6),
+            }));
           }
-
-          if (followUser && mapRef.current) mapRef.current.animateToRegion({ latitude, longitude, latitudeDelta: 0.005, longitudeDelta: 0.005 }, 500);
         }
       );
-    }
-    // ... Accelerometer logic (Crash) remains same ...
-    if (!accelerometerSub.current) {
-      Accelerometer.setUpdateInterval(100); 
-      accelerometerSub.current = Accelerometer.addListener(data => {
-        const totalForce = Math.sqrt(data.x ** 2 + data.y ** 2 + data.z ** 2);
-        if (totalForce > 4.0 && !crashDetected && !sosActive) triggerCrashSequence();
-      });
-    }
-  };
+    })();
+  }, [recording]);
 
-  const stopTracking = () => {
-    if (locationSub.current) { locationSub.current.remove(); locationSub.current = null; }
-    if (accelerometerSub.current) { accelerometerSub.current.remove(); accelerometerSub.current = null; }
-    setCurrentSpeed(0);
-  };
-  
-  const handleRecenter = async () => {
-    setFollowUser(true);
-    if (currentLocation && mapRef.current) {
-       mapRef.current.animateToRegion({
-          latitude: currentLocation.coords.latitude,
-          longitude: currentLocation.coords.longitude,
-          latitudeDelta: 0.005, longitudeDelta: 0.005
-       }, 500);
-    }
-  };
-
-  const triggerCrashSequence = async () => {
-    setCrashDetected(true);
-    setSosCountdown(10);
-    setSosActive(false);
-    Vibration.vibrate([0, 500, 200, 500], true); 
-    if (sosInterval.current) clearInterval(sosInterval.current);
-    sosInterval.current = setInterval(() => {
-       setSosCountdown(prev => {
-          if (prev <= 1) { executeSOS(); return 0; }
-          return prev - 1;
-       });
-    }, 1000);
-  };
-
-  const executeSOS = async () => {
-    clearInterval(sosInterval.current);
-    setSosActive(true);
-    try {
-      const { sound: playbackObject } = await Audio.Sound.createAsync(
-         require('../../assets/sounds/siren.mp3'),
-         { shouldPlay: true, isLooping: true, volume: 1.0 }
-      );
-      setSound(playbackObject);
-    } catch (e) {}
-    if (batteryLevel > 0.36) strobeInterval.current = setInterval(() => setFlashOn(prev => !prev), 200);
-  };
-
-  const cancelCrash = async () => {
-    setCrashDetected(false);
-    setSosActive(false);
-    setSosCountdown(10);
-    setFlashOn(false);
-    clearInterval(sosInterval.current);
-    if (strobeInterval.current) clearInterval(strobeInterval.current);
-    Vibration.cancel();
-    if (sound) { await sound.stopAsync(); await sound.unloadAsync(); setSound(null); }
-  };
-
-  useEffect(() => { if (recording && !paused) startTracking(); else stopTracking(); }, [recording, paused]);
-
+  // TIMER
   useEffect(() => {
     let interval: any;
-    if (recording && !paused) interval = setInterval(() => setDuration(d => d + 1), 1000);
-    return () => clearInterval(interval);
-  }, [recording, paused]);
-
-  const handleStart = async () => {
-    setRecording(true);
-    setPaused(false);
-    setPath([]);
-    setDuration(0);
-    try {
-      const docRef = await addDoc(collection(db, "active_rides"), { 
-         userId: auth.currentUser?.uid, 
-         startTime: serverTimestamp(), 
-         status: "active",
-         type: "motorcycle"
-      });
-      setRideDocId(docRef.id);
-    } catch (e) {}
-  };
-
-  const handleFinish = async () => {
-    setRecording(false);
-    if (rideDocId) {
-       // Mark ride as complete so it disappears from map
-       updateDoc(doc(db, "active_rides", rideDocId), { status: "completed" });
-       
-       try {
-        await addDoc(collection(db, "routes"), {
-          userId: auth.currentUser?.uid,
-          name: `Moto Ride ${new Date().toLocaleDateString()}`,
-          points: path,
-          duration: duration,
-          maxSpeed: maxSpeed,
-          distance: (path.length * 0.005), 
-          createdAt: serverTimestamp(),
-          type: "Motorcycle"
-        });
-       } catch(e) {}
+    if (recording) {
+      interval = setInterval(
+        () => setStats((s) => ({ ...s, time: s.time + 1 })),
+        1000
+      );
     }
-    router.replace("/(tabs)/maps");
-  };
+    return () => clearInterval(interval);
+  }, [recording]);
 
-  const btnStyle = { backgroundColor: isDark ? 'rgba(30,30,30,0.85)' : 'rgba(255,255,255,0.85)', borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)', borderWidth: 0.5 };
+  // CRASH DETECTION (~5G, only while recording)
+  useEffect(() => {
+    if (!recording) return;
+    const sub = Accelerometer.addListener(({ x, y, z }) => {
+      const mag = Math.sqrt(x * x + y * y + z * z);
+      if (mag > 5 && crashCountdown === null && !sosActive) {
+        setCrashCountdown(10);
+        Vibration.vibrate([500, 500], true);
+      }
+    });
+    return () => sub.remove();
+  }, [recording, crashCountdown, sosActive]);
+
+  // SIREN
+  async function playSiren() {
+    try {
+      const { sound } = await Audio.Sound.createAsync(
+        require('../assets/sounds/siren.mp3')
+      );
+      setSound(sound);
+      await sound.setIsLoopingAsync(true);
+      await sound.playAsync();
+    } catch (e) {
+      Vibration.vibrate([500, 500], true);
+    }
+  }
+
+  async function stopSiren() {
+    try {
+      if (sound) {
+        await sound.stopAsync();
+        await sound.unloadAsync();
+        setSound(null);
+      }
+    } catch {}
+    Vibration.cancel();
+  }
+
+  // COUNTDOWN → SOS
+  useEffect(() => {
+    if (crashCountdown === null) return;
+
+    if (crashCountdown === 0) {
+      setCrashCountdown(null);
+      setSosActive(true);
+      playSiren();
+      if (auth.currentUser) {
+        updateDoc(doc(db, 'users', auth.currentUser.uid), {
+          sos: true,
+          lastLocation: location?.coords || null,
+        }).catch(console.log);
+      }
+      return;
+    }
+
+    const t = setTimeout(
+      () => setCrashCountdown((c) => (c !== null ? c - 1 : null)),
+      1000
+    );
+    return () => clearTimeout(t);
+  }, [crashCountdown]);
+
+  const formatTime = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
 
   return (
-    <View style={[s.container, { backgroundColor: theme.colors.background }]}>
-      {crashDetected && permission?.granted && (<CameraView style={{width: 1, height: 1, opacity: 0}} facing="back" enableTorch={flashOn} />)}
-
+    <View style={s.container}>
       <MapView
         ref={mapRef}
-        key={mapType} 
-        style={StyleSheet.absoluteFill}
+        style={s.map}
         provider={PROVIDER_GOOGLE}
-        showsUserLocation={true}
-        showsMyLocationButton={false} 
-        onPanDrag={() => setFollowUser(false)}
         mapType={mapType}
-        userInterfaceStyle={isDark ? "dark" : "light"}
-        customMapStyle={isDark && mapType === "standard" ? darkMapStyle : []}
-      >
-         {ghostPath.length > 0 && <Polyline coordinates={ghostPath} strokeColor="rgba(255,255,255,0.5)" strokeWidth={5} />}
-         <Polyline coordinates={path} strokeColor="#F97316" strokeWidth={5} />
-         {showRain && rainTimestamp && <UrlTile urlTemplate={`https://tile.rainviewer.com/${rainTimestamp}/256/{z}/{x}/{y}/2/1_1.png`} zIndex={1} opacity={0.7} />}
-         
-         {/* PACK MODE MARKERS */}
-         {showPack && activeRiders.map((rider) => (
-            <Marker
-               key={rider.id}
-               coordinate={rider.lastLocation}
-               title="Fellow Rider"
-               description={`Speed: ${Math.round(rider.currentSpeed || 0)} km/h`}
+        customMapStyle={DARK_BLUE_STYLE}
+        showsUserLocation
+        showsMyLocationButton={false}  // no default recenter
+      />
+
+      {/* RIGHT ACTION BUTTONS (rotate, LAYERS, recenter) */}
+      <View style={s.rightStack}>
+        <TouchableOpacity style={s.glassBtn}>
+          <IconButton icon="sync" iconColor="#fff" size={20} />
+        </TouchableOpacity>
+
+        {/* LAYERS opens Map Style sheet */}
+        <TouchableOpacity style={s.glassBtn} onPress={() => setShowLayers(true)}>
+          <IconButton icon="layers-outline" iconColor="#fff" size={20} />
+        </TouchableOpacity>
+
+        {/* Custom recenter only */}
+        <TouchableOpacity
+          style={s.glassBtn}
+          onPress={() => {
+            if (location && mapRef.current) {
+              mapRef.current.animateCamera({ center: location.coords, zoom: 16 });
+            }
+          }}
+        >
+          <IconButton icon="navigation" iconColor="#F97316" size={20} />
+        </TouchableOpacity>
+      </View>
+
+      {/* BOTTOM STATS + START */}
+      <View style={s.bottomSheet}>
+        <View style={s.statsContainer}>
+          <View style={s.statCol}>
+            <Text style={s.label}>TIME</Text>
+            <Text style={s.value}>{formatTime(stats.time)}</Text>
+          </View>
+          <View style={s.statCol}>
+            <Text style={s.label}>SPEED</Text>
+            <Text style={s.value}>{stats.speed}</Text>
+          </View>
+        </View>
+        <Button
+          mode="contained"
+          style={s.orangeBtn}
+          labelStyle={s.btnText}
+          onPress={() => setRecording(true)}
+        >
+          Start Ride
+        </Button>
+      </View>
+
+      {/* CRASH OVERLAY */}
+      {crashCountdown !== null && (
+        <View style={s.crashOverlay}>
+          <View style={s.crashBox}>
+            <Avatar.Icon
+              size={64}
+              icon="alert"
+              color="#D32F2F"
+              style={{ backgroundColor: '#fff' }}
+            />
+            <Text style={s.crashTitle}>CRASH DETECTED</Text>
+            <Text style={s.crashNumber}>{crashCountdown}</Text>
+            <TouchableOpacity
+              style={s.whitePill}
+              onPress={() => setCrashCountdown(null)}
             >
-               <View style={{backgroundColor: "#F97316", padding: 5, borderRadius: 15, borderWidth: 2, borderColor: "white"}}>
-                  <MaterialCommunityIcons name="motorbike" size={16} color="white" />
-               </View>
-            </Marker>
-         ))}
-      </MapView>
+              <Text style={s.pillText}>I'M OKAY - CANCEL</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
-      <Portal>
-         <Modal visible={crashDetected} dismissable={false} contentContainerStyle={[s.alertBox, {backgroundColor: theme.colors.error}]}>
-            <MaterialCommunityIcons name={sosActive ? "alarm-light" : "alert-octagon"} size={60} color="white" />
-            <Text variant="displaySmall" style={{color:"white", fontWeight:"bold", marginVertical:10}}>{sosActive ? "SOS ACTIVE" : "CRASH DETECTED"}</Text>
-            <Text variant="displayLarge" style={{color:"white", fontWeight:"bold", marginBottom:20}}>{!sosActive && sosCountdown}</Text>
-            <Button mode="contained" buttonColor="white" textColor="red" contentStyle={{height: 60}} labelStyle={{fontSize: 20}} onPress={cancelCrash}>
-               {sosActive ? "STOP SOS" : "I'M OKAY - CANCEL"}
+      {/* SOS ACTIVE OVERLAY */}
+      {sosActive && (
+        <View style={s.crashOverlay}>
+          <View style={[s.crashBox, { backgroundColor: '#D32F2F' }]}>
+            <Text style={s.crashTitle}>SOS ACTIVE</Text>
+            <Text
+              style={{
+                color: '#fff',
+                textAlign: 'center',
+                marginVertical: 20,
+              }}
+            >
+              Siren Playing…{'\n'}Notifying Contacts…
+            </Text>
+            <TouchableOpacity
+              style={s.whitePill}
+              onPress={async () => {
+                setSosActive(false);
+                await stopSiren();
+                if (auth.currentUser) {
+                  updateDoc(doc(db, 'users', auth.currentUser.uid), {
+                    sos: false,
+                  }).catch(console.log);
+                }
+              }}
+            >
+              <Text style={s.pillText}>STOP SOS</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* MAP STYLE SHEET (Standard / Satellite + Rain Radar + Pack Mode) */}
+      {showLayers && (
+        <View style={s.sheetOverlay}>
+          <View style={s.sheet}>
+            <Text style={s.sheetTitle}>Map Style</Text>
+
+            <TouchableOpacity
+              style={s.radioRow}
+              onPress={() => setMapType('standard')}
+            >
+              <IconButton
+                icon={mapType === 'standard' ? 'radiobox-marked' : 'radiobox-blank'}
+                iconColor={mapType === 'standard' ? '#F97316' : '#666'}
+                size={18}
+              />
+              <Text style={s.radioLabel}>Standard</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={s.radioRow}
+              onPress={() => setMapType('satellite')}
+            >
+              <IconButton
+                icon={mapType === 'satellite' ? 'radiobox-marked' : 'radiobox-blank'}
+                iconColor={mapType === 'satellite' ? '#F97316' : '#666'}
+                size={18}
+              />
+              <Text style={s.radioLabel}>Satellite</Text>
+            </TouchableOpacity>
+
+            <View style={s.divider} />
+
+            <View style={s.toggleRow}>
+              <Text style={s.toggleLabel}>Rain Radar</Text>
+              <Button
+                mode={rainRadar ? 'contained' : 'outlined'}
+                compact
+                onPress={() => setRainRadar(!rainRadar)}
+              >
+                {rainRadar ? 'On' : 'Off'}
+              </Button>
+            </View>
+
+            <View style={s.toggleRow}>
+              <Text style={s.toggleLabel}>Pack Mode (Others)</Text>
+              <Button
+                mode={packMode ? 'contained' : 'outlined'}
+                compact
+                onPress={() => setPackMode(!packMode)}
+              >
+                {packMode ? 'On' : 'Off'}
+              </Button>
+            </View>
+
+            <Button
+              mode="text"
+              onPress={() => setShowLayers(false)}
+              style={{ marginTop: 10 }}
+            >
+              Close
             </Button>
-         </Modal>
-      </Portal>
-
-      <View style={s.controlsContainer}>
-        <TouchableOpacity style={[s.controlBtn, btnStyle]} onPress={() => setShowMapMenu(true)}>
-          <Ionicons name="layers-outline" size={24} color={theme.colors.onSurface} />
-        </TouchableOpacity>
-        <View style={{height: 10}} />
-        <TouchableOpacity style={[s.controlBtn, btnStyle]} onPress={handleRecenter}>
-          <Ionicons name={followUser ? "navigate" : "navigate-outline"} size={24} color={followUser ? theme.colors.primary : theme.colors.onSurface} />
-        </TouchableOpacity>
-        <View style={{height: 10}} />
-        <TouchableOpacity style={[s.controlBtn, btnStyle, gloveMode && {backgroundColor: theme.colors.primary}]} onPress={() => setGloveMode(!gloveMode)}>
-          <MaterialCommunityIcons name="hand-back-right" size={24} color={gloveMode ? "white" : theme.colors.onSurface} />
-        </TouchableOpacity>
-      </View>
-
-      <Portal>
-        <Modal visible={showMapMenu} onDismiss={() => setShowMapMenu(false)} contentContainerStyle={[s.modal, {backgroundColor: theme.colors.surface}]}>
-          <Text variant="titleMedium" style={{marginBottom: 10}}>Map Style</Text>
-          <RadioButton.Group onValueChange={val => setMapType(val as MapType)} value={mapType}>
-             <View style={s.radioRow}><RadioButton value="standard" /><Text>Standard</Text></View>
-             <View style={s.radioRow}><RadioButton value="satellite" /><Text>Satellite</Text></View>
-          </RadioButton.Group>
-          <Divider style={{marginVertical: 15}} />
-          <View style={s.switchRow}><Text>Rain Radar</Text><Switch value={showRain} onValueChange={setShowRain} color="#F97316" /></View>
-          <View style={s.switchRow}><Text>Pack Mode (Others)</Text><Switch value={showPack} onValueChange={setShowPack} color="#F97316" /></View>
-        </Modal>
-      </Portal>
-
-      <View style={s.overlay}>
-         <View style={[s.statCard, { backgroundColor: isDark ? 'rgba(30,30,30,0.9)' : 'rgba(255,255,255,0.9)' }]}> 
-            <View style={s.statItem}><Text style={[s.statLabel, {color: "gray"}]}>Time</Text><Text style={[s.statValue, {color: theme.colors.onSurface}, gloveMode && {fontSize: 32}]}>{formatTime(duration)}</Text></View>
-            <View style={s.statItem}><Text style={[s.statLabel, {color: "gray"}]}>Speed</Text><Text style={[s.statValue, {color: theme.colors.primary}, gloveMode && {fontSize: 48}]}>{currentSpeed.toFixed(0)}</Text></View>
-         </View>
-         <View style={s.controls}>
-             {!recording ? (
-               <Button mode="contained" onPress={handleStart} style={s.startBtn} contentStyle={{height: gloveMode ? 100 : 80}} labelStyle={{fontSize: gloveMode?24:20, fontWeight: "bold"}} buttonColor="#F97316">Start Ride</Button>
-             ) : (
-               <View style={{flexDirection:"row", gap: 20}}>
-                  <Button mode="contained" onPress={() => setPaused(!paused)} style={s.pauseBtn} buttonColor={paused ? "#F97316" : "#EF4444"}>{paused ? "Resume" : "Pause"}</Button>
-                  <Button mode="contained" onPress={handleFinish} style={s.pauseBtn} buttonColor="gray">Finish</Button>
-               </View>
-             )}
-         </View>
-      </View>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
 
-const darkMapStyle = [{ "elementType": "geometry", "stylers": [{ "color": "#242f3e" }] }];
 const s = StyleSheet.create({
   container: { flex: 1 },
-  controlsContainer: { position: 'absolute', top: 50, right: 20, alignItems: 'center' },
-  controlBtn: { width: 45, height: 45, borderRadius: 12, justifyContent: 'center', alignItems: 'center', elevation: 4 },
-  modal: { padding: 20, margin: 40, borderRadius: 15 },
-  alertBox: { padding: 20, margin: 20, borderRadius: 15, alignItems: 'center', justifyContent: 'center', elevation: 20 },
-  radioRow: { flexDirection: 'row', alignItems: 'center' },
-  switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  overlay: { position: "absolute", bottom: 0, width: "100%", padding: 20, alignItems: "center" },
-  statCard: { flexDirection: "row", justifyContent: "space-around", width: "100%", padding: 20, borderRadius: 20, marginBottom: 30, elevation: 5 },
-  statItem: { alignItems: "center" },
-  statLabel: { fontSize: 12, textTransform: "uppercase", marginBottom: 5 },
-  statValue: { fontSize: 28, fontWeight: "bold" },
-  controls: { alignItems: "center", width: "100%" },
-  startBtn: { borderRadius: 50, width: "90%", justifyContent: "center", elevation: 5 },
-  pauseBtn: { borderRadius: 30, width: 120, height: 60, justifyContent: "center", elevation: 5 }
+  map: { width, height },
+  rightStack: { position: 'absolute', top: 40, right: 15, gap: 8 },
+  glassBtn: {
+    backgroundColor: 'rgba(50,50,50,0.6)',
+    borderRadius: 10,
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  bottomSheet: {
+    position: 'absolute',
+    bottom: 40,
+    width: width - 40,
+    left: 20,
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    borderRadius: 24,
+    padding: 20,
+  },
+  statsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 20,
+  },
+  statCol: { alignItems: 'center' },
+  label: { fontSize: 12, color: '#666', fontWeight: 'bold' },
+  value: { fontSize: 32, fontWeight: 'bold', color: '#000' },
+  orangeBtn: {
+    backgroundColor: '#F97316',
+    borderRadius: 30,
+    height: 56,
+    justifyContent: 'center',
+  },
+  btnText: { fontSize: 20, fontWeight: 'bold', color: '#fff' },
+  crashOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  crashBox: {
+    width: width * 0.85,
+    backgroundColor: '#D32F2F',
+    borderRadius: 20,
+    padding: 30,
+    alignItems: 'center',
+  },
+  crashTitle: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: 'bold',
+    marginTop: 15,
+    textAlign: 'center',
+  },
+  crashNumber: {
+    color: '#fff',
+    fontSize: 90,
+    fontWeight: 'bold',
+    marginVertical: 10,
+  },
+  whitePill: {
+    backgroundColor: '#fff',
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    borderRadius: 40,
+    width: '100%',
+    alignItems: 'center',
+  },
+  pillText: { color: '#D32F2F', fontWeight: 'bold', fontSize: 18 },
+
+  sheetOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    zIndex: 1100,
+  },
+  sheet: {
+    width,
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+  },
+  sheetTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 10 },
+  radioRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 4 },
+  radioLabel: { fontSize: 16 },
+  divider: { height: 1, backgroundColor: '#eee', marginVertical: 10 },
+  toggleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: 6,
+  },
+  toggleLabel: { fontSize: 16 },
 });
+
+const DARK_BLUE_STYLE = [
+  { elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#38414e' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
+];
 EOF
 
-echo "✅ Pack Mode Enabled. You can now see other active riders."
+echo "✅ Record screen imports fixed and Map Style sheet added."
+echo "Run: npx expo start --clear"

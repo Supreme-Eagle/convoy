@@ -1,101 +1,46 @@
-import React from "react";
-import { Tabs } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import { useAuth } from "../../src/auth/AuthProvider";
-import { ActivityIndicator, View } from "react-native";
-import { useThemeContext } from "../../src/context/ThemeContext";
-import { PaperProvider } from "react-native-paper";
+import React from 'react';
+import { Tabs } from 'expo-router';
+import { useThemeContext } from '../../src/context/ThemeContext';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 export default function TabLayout() {
-  const { loading } = useAuth();
   const { theme } = useThemeContext();
 
-  if (loading) {
-    return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.background }}>
-        <ActivityIndicator size="large" color="#F97316" />
-      </View>
-    );
-  }
-
   return (
-    <PaperProvider theme={theme}>
-      <Tabs
-        screenOptions={{
-          headerShown: false,
-          tabBarActiveTintColor: "#F97316",
-          tabBarInactiveTintColor: "gray",
-          tabBarStyle: { 
-            backgroundColor: theme.colors.surface, 
-            borderTopWidth: 0,
-            elevation: 5,
-            height: 60,
-            paddingBottom: 5
-          },
-          tabBarLabelStyle: { fontSize: 10, fontWeight: "bold" },
-        }}
-      >
-        <Tabs.Screen
-          name="home"
-          options={{
-            title: "Home",
-            tabBarIcon: ({ color }) => <Ionicons name="home" size={28} color={color} />,
-          }}
-        />
-        
-        {/* CORRECTED: Point to 'maps/index' but call it 'Maps' */}
-        <Tabs.Screen
-          name="maps/index"
-          options={{
-            title: "Maps",
-            tabBarIcon: ({ color }) => <Ionicons name="map-outline" size={26} color={color} />,
-          }}
-        />
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarStyle: { 
+          backgroundColor: theme.dark ? '#000' : '#fff', 
+          borderTopColor: theme.dark ? '#333' : '#e0e0e0',
+          elevation: 0,
+          height: 60,
+          paddingBottom: 8
+        },
+        tabBarActiveTintColor: '#F97316',
+        tabBarInactiveTintColor: 'gray',
+      }}
+    >
+      {/* MAIN TABS */}
+      <Tabs.Screen name="home" options={{ title: 'Home', tabBarIcon: ({ color }) => <MaterialCommunityIcons name="home-variant" size={28} color={color} /> }} />
+      <Tabs.Screen name="maps/index" options={{ title: 'Maps', tabBarIcon: ({ color }) => <MaterialCommunityIcons name="map-outline" size={28} color={color} /> }} />
+      <Tabs.Screen name="record" options={{ title: 'Record', tabBarIcon: ({ color }) => <MaterialCommunityIcons name="record-circle-outline" size={28} color={color} /> }} />
+      <Tabs.Screen name="groups" options={{ title: 'Groups', tabBarIcon: ({ color }) => <MaterialCommunityIcons name="account-group-outline" size={28} color={color} /> }} />
+      <Tabs.Screen name="profile" options={{ title: 'You', tabBarIcon: ({ color }) => <MaterialCommunityIcons name="account-circle-outline" size={28} color={color} /> }} />
 
-        <Tabs.Screen
-          name="record"
-          options={{
-            title: "Record",
-            tabBarIcon: ({ color }) => <Ionicons name="radio-button-on" size={34} color={color} />,
-          }}
-        />
-        <Tabs.Screen
-          name="groups"
-          options={{
-            title: "Groups",
-            tabBarIcon: ({ color }) => <Ionicons name="people-outline" size={28} color={color} />,
-          }}
-        />
-        <Tabs.Screen
-          name="profile"
-          options={{
-            title: "You",
-            tabBarIcon: ({ color }) => <Ionicons name="person-circle-outline" size={30} color={color} />,
-          }}
-        />
-
-        {/* HIDE ALL INTERNAL FILES */}
-        <Tabs.Screen name="settings" options={{ href: null }} />
-        <Tabs.Screen name="edit-profile" options={{ href: null }} />
-        <Tabs.Screen name="security" options={{ href: null }} />
-        <Tabs.Screen name="activity/[id]" options={{ href: null }} />
-        
-        {/* Fix: 'rides' is the folder/file name, not rides/[id] if it wasn't scanned that way */}
-        <Tabs.Screen name="rides" options={{ href: null }} />
-        
-        <Tabs.Screen name="calendar" options={{ href: null }} />
-        <Tabs.Screen name="map" options={{ href: null }} />
-        <Tabs.Screen name="marketplace" options={{ href: null }} />
-        <Tabs.Screen name="two" options={{ href: null }} />
-        <Tabs.Screen name="explore" options={{ href: null }} />
-        
-        {/* Hide extra maps routes */}
-        <Tabs.Screen name="maps/create" options={{ href: null }} />
-        
-        {/* Hide 'index' if it refers to the root tab index (redirects usually handle this) */}
-        <Tabs.Screen name="index" options={{ href: null }} />
-
-      </Tabs>
-    </PaperProvider>
+      {/* HIDDEN ROUTES */}
+      <Tabs.Screen name="index" options={{ href: null }} />
+      <Tabs.Screen name="map" options={{ href: null }} />
+      <Tabs.Screen name="two" options={{ href: null }} />
+      <Tabs.Screen name="calendar" options={{ href: null }} />
+      <Tabs.Screen name="marketplace" options={{ href: null }} />
+      <Tabs.Screen name="edit-profile" options={{ href: null }} />
+      <Tabs.Screen name="security" options={{ href: null }} />
+      <Tabs.Screen name="settings" options={{ href: null }} />
+      <Tabs.Screen name="rides" options={{ href: null }} />
+      <Tabs.Screen name="explore" options={{ href: null }} />
+      <Tabs.Screen name="activity/[id]" options={{ href: null }} />
+      <Tabs.Screen name="maps/create" options={{ href: null }} />
+    </Tabs>
   );
 }
