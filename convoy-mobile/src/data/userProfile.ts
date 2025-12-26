@@ -1,70 +1,12 @@
-import { auth, db } from "../firebase";
-import { doc, getDoc, onSnapshot, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
+import { db } from "../firebase";
 
-export type UserProfile = {
-  uid: string;
-  displayName: string;
-  onboardingCompleted: boolean;
-  termsAcceptedAt?: any;
-  locationPermission?: "granted" | "denied" | "unknown";
-  settings?: { locationSharingEnabled?: boolean };
-  emergencyName?: string;
-  emergencyPhone?: string;
-  bloodGroup?: string;
-  createdAt?: any;
-  updatedAt?: any;
-};
-
-export function needsOnboarding(profile: UserProfile | null) {
-  return !profile || profile.onboardingCompleted !== true;
-}
-
-export async function ensureUserProfileDoc(uid: string) {
-  const ref = doc(db, "users", uid);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) {
-    const displayName =
-      auth.currentUser?.displayName ||
-      auth.currentUser?.email?.split("@")[0] ||
-      "Rider";
-
-    await setDoc(ref, {
-      uid,
-      displayName,
-      onboardingCompleted: false,
-      locationPermission: "unknown",
-      settings: { locationSharingEnabled: true },
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    } as UserProfile);
+export async function checkOnboardingStatus(uid: string): Promise<boolean> {
+  try {
+    const snap = await getDoc(doc(db, "users", uid));
+    if (!snap.exists()) return true; // No doc = Needs onboarding
+    return !snap.data().onboardingComplete;
+  } catch (e) {
+    return false; // Fail safe
   }
-}
-
-export function subscribeToUserProfile(uid: string, cb: (p: UserProfile | null) => void) {
-  return onSnapshot(doc(db, "users", uid), (snap) =>
-    cb(snap.exists() ? (snap.data() as UserProfile) : null)
-  );
-}
-
-export async function completeOnboarding(uid: string) {
-  await updateDoc(doc(db, "users", uid), {
-    onboardingCompleted: true,
-    termsAcceptedAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
-}
-
-export async function setEmergencyDetails(uid: string, patch: Partial<UserProfile>) {
-  await updateDoc(doc(db, "users", uid), { ...patch, updatedAt: serverTimestamp() });
-}
-
-export async function setLocationPermission(uid: string, status: "granted" | "denied") {
-  await updateDoc(doc(db, "users", uid), { locationPermission: status, updatedAt: serverTimestamp() });
-}
-
-export async function setLocationSharingEnabled(uid: string, enabled: boolean) {
-  await updateDoc(doc(db, "users", uid), {
-    settings: { locationSharingEnabled: enabled },
-    updatedAt: serverTimestamp(),
-  });
 }

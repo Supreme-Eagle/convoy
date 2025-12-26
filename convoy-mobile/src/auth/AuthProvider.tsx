@@ -1,85 +1,45 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
-import {
-  onAuthStateChanged,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signOut,
-  type User,
-} from "firebase/auth";
-import { auth, db } from "../firebase";
-import { doc, setDoc } from "firebase/firestore";
+import { onAuthStateChanged, signOut as firebaseSignOut, signInWithEmailAndPassword, createUserWithEmailAndPassword, User } from "firebase/auth";
+import { auth } from "../firebase"; 
 
-type AuthContextType = {
-  user: User | null;
-  initializing: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string) => Promise<void>;
-  signOutUser: () => Promise<void>;
-};
+const AuthContext = createContext<any>(null);
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+export function useAuth() {
+  return useContext(AuthContext);
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [initializing, setInitializing] = useState(true);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const sub = onAuthStateChanged(auth, async (u) => {
-      setUser(u);
-      setInitializing(false);
-
-      // Ensure user profile doc exists (so we can show email in member list)
-      if (u) {
-        await setDoc(
-          doc(db, "users", u.uid),
-          {
-            email: u.email ?? "",
-            displayName: u.email ?? "",
-            photoUrl: u.photoURL ?? "",
-            rating: 5.0,
-            kmRidden: 0,
-            updatedAt: new Date(),
-          },
-          { merge: true }
-        );
-      }
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoading(false);
     });
-    return sub;
+    return unsubscribe;
   }, []);
 
-  const signIn = async (email: string, password: string) => {
-    await signInWithEmailAndPassword(auth, email.trim(), password);
+  const signIn = async (email, password) => {
+    return await signInWithEmailAndPassword(auth, email, password);
   };
 
-  const signUp = async (email: string, password: string) => {
-    const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-    await setDoc(
-      doc(db, "users", cred.user.uid),
-      {
-        email: cred.user.email ?? "",
-        displayName: cred.user.email ?? "",
-        photoUrl: cred.user.photoURL ?? "",
-        rating: 5.0,
-        kmRidden: 0,
-        createdAt: new Date(),
-      },
-      { merge: true }
-    );
+  const signUp = async (email, password) => {
+    return await createUserWithEmailAndPassword(auth, email, password);
   };
 
-  const signOutUser = async () => {
-    await signOut(auth);
+  // Ensure this function is EXPORTED in the value object below
+  const signOut = async () => {
+    try {
+      await firebaseSignOut(auth);
+    } catch (e) {
+      console.error("Sign out error", e);
+    }
   };
 
   return (
-    <AuthContext.Provider value={{ user, initializing, signIn, signUp, signOutUser }}>
-      {children}
+    <AuthContext.Provider value={{ user, loading, signIn, signUp, signOut }}>
+      {!loading && children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
-  return ctx;
 }
