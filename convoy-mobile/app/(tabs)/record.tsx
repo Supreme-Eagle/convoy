@@ -6,14 +6,12 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
 import { Accelerometer } from 'expo-sensors';
-import { CameraView, useCameraPermissions } from 'expo-camera'; // FIXED: Use CameraView
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { Audio } from 'expo-av';
 import { useThemeContext } from "../../src/context/ThemeContext";
 import { doc, addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { db, auth } from "../../src/firebase";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-
-// Audio disabled
-// import { Audio } from 'expo-av';
 
 export default function RecordScreen() {
   const { theme, isDark } = useThemeContext();
@@ -45,6 +43,7 @@ export default function RecordScreen() {
   const [sosCountdown, setSosCountdown] = useState(10);
   const [sosActive, setSosActive] = useState(false);
   const [flashOn, setFlashOn] = useState(false);
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
   
   // Battery State
   const [batteryLevel, setBatteryLevel] = useState(1.0);
@@ -68,7 +67,6 @@ export default function RecordScreen() {
       const level = await Battery.getBatteryLevelAsync();
       setBatteryLevel(level);
       
-      // Get initial location for map centering
       const loc = await Location.getCurrentPositionAsync({});
       setCurrentLocation(loc);
       if (mapRef.current) {
@@ -82,7 +80,11 @@ export default function RecordScreen() {
         .then(r => r.json())
         .then(d => { if(d.radar?.past?.length) setRainTimestamp(d.radar.past[d.radar.past.length-1].time); });
     })();
-    return () => stopTracking();
+    
+    return () => {
+      stopTracking();
+      if(sound) sound.unloadAsync();
+    };
   }, []);
 
   const startTracking = async () => {
@@ -97,16 +99,12 @@ export default function RecordScreen() {
         { accuracy, timeInterval: timeInt, distanceInterval: distInt }, 
         (loc) => {
           const { latitude, longitude, speed } = loc.coords;
-          setCurrentLocation(loc); // Store locally for Recenter button
-          
+          setCurrentLocation(loc);
           const speedKmh = speed && speed > 0 ? speed * 3.6 : 0;
           setCurrentSpeed(Math.max(0, speedKmh));
           if (speedKmh > maxSpeed) setMaxSpeed(speedKmh);
           setPath(prev => [...prev, { latitude, longitude, speed: speedKmh }]);
-          
-          if (followUser && mapRef.current) {
-             mapRef.current.animateToRegion({ latitude, longitude, latitudeDelta: 0.005, longitudeDelta: 0.005 }, 500);
-          }
+          if (followUser && mapRef.current) mapRef.current.animateToRegion({ latitude, longitude, latitudeDelta: 0.005, longitudeDelta: 0.005 }, 500);
         }
       );
     }
@@ -128,10 +126,8 @@ export default function RecordScreen() {
     setCurrentSpeed(0);
   };
   
-  // MANUAL RECENTER FUNCTION
   const handleRecenter = async () => {
     setFollowUser(true);
-    // If we have a cached location from watcher, use it immediately
     if (currentLocation && mapRef.current) {
        mapRef.current.animateToRegion({
           latitude: currentLocation.coords.latitude,
@@ -139,7 +135,6 @@ export default function RecordScreen() {
           latitudeDelta: 0.005, longitudeDelta: 0.005
        }, 500);
     } else {
-       // Otherwise fetch fresh one
        const loc = await Location.getCurrentPositionAsync({});
        setCurrentLocation(loc);
        mapRef.current?.animateToRegion({
@@ -172,14 +167,20 @@ export default function RecordScreen() {
     clearInterval(sosInterval.current);
     setSosActive(true);
     
-    // Flash Strobe Logic
+    // Play Local Siren - UPDATED FILENAME
+    try {
+      const { sound: playbackObject } = await Audio.Sound.createAsync(
+         require('../../assets/sounds/siren.mp3'),
+         { shouldPlay: true, isLooping: true, volume: 1.0 }
+      );
+      setSound(playbackObject);
+    } catch (e) { console.log("Audio Error:", e); }
+
     if (batteryLevel > 0.36) {
        strobeInterval.current = setInterval(() => {
           setFlashOn(prev => !prev);
        }, 200);
     }
-
-    Alert.alert("SOS SIGNAL SENT", "Your location has been broadcast to emergency contacts.");
   };
 
   const cancelCrash = async () => {
@@ -191,6 +192,12 @@ export default function RecordScreen() {
     clearInterval(sosInterval.current);
     if (strobeInterval.current) clearInterval(strobeInterval.current);
     Vibration.cancel();
+    
+    if (sound) {
+      await sound.stopAsync();
+      await sound.unloadAsync();
+      setSound(null);
+    }
   };
 
   useEffect(() => {
@@ -238,13 +245,8 @@ export default function RecordScreen() {
 
   return (
     <View style={[s.container, { backgroundColor: theme.colors.background }]}>
-      {/* Hidden CameraView for Flash (New API) */}
       {crashDetected && permission?.granted && (
-         <CameraView
-            style={{width: 1, height: 1, opacity: 0}} 
-            facing="back"
-            enableTorch={flashOn} // Simple boolean toggle for Torch
-         />
+         <CameraView style={{width: 1, height: 1, opacity: 0}} facing="back" enableTorch={flashOn} />
       )}
 
       <MapView
@@ -277,7 +279,7 @@ export default function RecordScreen() {
             ) : (
                <>
                  <Text variant="displaySmall" style={{color:"white", fontWeight:"bold", marginVertical:10}}>SOS ACTIVE</Text>
-                 <Text style={{color:"white", textAlign:"center", marginBottom:20}}>Siren (Simulated)... Flash Strobing...</Text>
+                 <Text style={{color:"white", textAlign:"center", marginBottom:20}}>Siren Playing... Flash Strobing...</Text>
                  <Text style={{color:"white", textAlign:"center", marginBottom:20}}>Help is on the way.</Text>
                </>
             )}
